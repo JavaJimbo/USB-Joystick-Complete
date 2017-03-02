@@ -13,7 +13,7 @@
  *  2-23-17: Got UART working with XBEE at 57600 baud, but SPBRG must be initialized twice!
  *  2-24-17: Read both joysticks. Right joystick readings 
  *          converted to Roomba Drive Direct command.
- * 
+ * 3-2-2017: Command sequence is now: COMMAND, SUBCOMMAND, NUM DATA BYTES, DATA....
  ********************************************************************/
 #include "USB/usb.h"
 #include "USB/usb_function_cdc.h"
@@ -29,6 +29,8 @@
 #define STX 36
 #define ETX 13
 #define DLE 16
+
+
 
 #define leftJoystickY   ADresult[0]
 #define leftJoystickX   ADresult[1]
@@ -103,7 +105,7 @@ short ADread(void);
 void putch(unsigned char TxByte);
 void readJoySticks(void);
 unsigned char insertByte(unsigned char dataByte, unsigned char *ptrBuffer, unsigned char *index);
-unsigned char BuildPacket(unsigned char command, unsigned char *ptrData, unsigned char dataLength, unsigned char *ptrPacket);
+unsigned char BuildPacket(unsigned char command, unsigned char subCommand, unsigned char dataLength, unsigned char *ptrData, unsigned char *ptrPacket);
 #define MAXPACKET 32
 unsigned char packet[MAXPACKET];
 
@@ -183,19 +185,20 @@ unsigned char debounce(void) {
     } else return (0);
 }
 
-void putch(unsigned char TxByte) {
-    while (!PIR1bits.TXIF); // set when register is empty 
-    TXREG = TxByte;
-    return;
-}
+
 
 #define RUN 2
 #define HALT 1
 #define STANDBY 0 
 
-const unsigned char arrStart[] = {STX, 0, 1, 128, ETX};
-const unsigned char arrFull[] = {STX, 0, 1, 132, ETX};
-const unsigned char arrHalt[] = {STX, 0, 5, 145, 0, 0, 0, 0, ETX};
+#define ROOMBA 0
+#define FULL 132
+#define START 128
+#define DRIVEDIRECT 145
+
+const unsigned char arrStart[] = {STX, ROOMBA, START, 0, ETX};
+const unsigned char arrFull[] = {STX, ROOMBA, FULL, 0, ETX};
+const unsigned char arrHalt[] = {STX, ROOMBA, DRIVEDIRECT, 4, 0, 0, 0, 0, ETX};
 
 void main(void) {
     unsigned int TMR2counter = 0;
@@ -568,16 +571,14 @@ void ProcessIO(unsigned char sendFlag) {
         convert.integer = rightMotor;
         rightMotorLSB = convert.byte[0];
         rightMotorMSB = convert.byte[1];
+        
+        motorData[0] = rightMotorMSB;
+        motorData[1] = rightMotorLSB;
+        motorData[2] = leftMotorMSB;
+        motorData[3] = leftMotorLSB;
 
-        motorData[0] = 145;
-        motorData[1] = rightMotorMSB;
-        motorData[2] = rightMotorLSB;
-        motorData[3] = leftMotorMSB;
-        motorData[4] = leftMotorLSB;
+        packetLength = BuildPacket(ROOMBA, DRIVEDIRECT, 4, motorData, packet);
 
-        packetLength = BuildPacket(0, motorData, 5, packet);
-
-        packetLength = 9;
         if (packetLength < MAXPACKET) for (i = 0; i < packetLength; i++) putch(packet[i]);
     }
 
@@ -679,20 +680,27 @@ unsigned char insertByte(unsigned char dataByte, unsigned char *ptrBuffer, unsig
     return (TRUE);
 }
 
-unsigned char BuildPacket(unsigned char command, unsigned char *ptrData, unsigned char dataLength, unsigned char *ptrPacket) {
+unsigned char BuildPacket(unsigned char command, unsigned char subCommand, unsigned char dataLength, unsigned char *ptrData, unsigned char *ptrPacket) {
     unsigned char packetIndex = 0, i;
 
     if (dataLength <= MAXPACKET) {
         ptrPacket[packetIndex++] = STX;
-        ptrPacket[packetIndex++] = command;
-        ptrPacket[packetIndex++] = dataLength;
+        // ptrPacket[packetIndex++] = command;
+        if (!insertByte(command, ptrPacket, &packetIndex)) return(0);
+        if (!insertByte(subCommand, ptrPacket, &packetIndex)) return(0);
+        if (!insertByte(dataLength, ptrPacket, &packetIndex)) return(0);
 
         for (i = 0; i < dataLength; i++){
-            if (!insertByte(ptrData[i], ptrPacket, &packetIndex))
-                return(0);
+            if (!insertByte(ptrData[i], ptrPacket, &packetIndex)) return(0);
         }
         ptrPacket[packetIndex++] = ETX;
 
         return (packetIndex);
     } else return (0);
 }
+
+void putch(unsigned char TxByte){
+    while(!PIR1bits.TXIF);
+    TXREG = TxByte;
+}
+    
